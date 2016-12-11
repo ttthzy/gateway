@@ -4,7 +4,6 @@ import (
 	"container/list"
 	"encoding/json"
 	"io"
-	"regexp"
 	"sync"
 
 	"github.com/CodisLabs/codis/pkg/utils/log"
@@ -15,12 +14,12 @@ import (
 
 // Cluster cluster
 type Cluster struct {
-	Name        string   `json:"name,omitempty"`
-	Pattern     string   `json:"pattern,omitempty"`
-	LbName      string   `json:"lbName,omitempty"`
+	Name   string `json:"name,omitempty"`
+	LbName string `json:"lbName,omitempty"`
+	// External external, e.g. create from external service discovery
+	External    bool     `json:"external,omitempty"`
 	BindServers []string `json:"bindServers,omitempty"`
 
-	regexp *regexp.Regexp
 	svrs   *list.List
 	rwLock *sync.RWMutex
 	lb     lb.LoadBalance
@@ -35,9 +34,9 @@ func UnMarshalCluster(data []byte) *Cluster {
 		return v
 	}
 
-	c, _ := NewCluster(v.Name, v.Pattern, v.LbName)
+	v.init()
 
-	return c
+	return v
 }
 
 // UnMarshalClusterFromReader unmarshal from reader
@@ -55,24 +54,47 @@ func UnMarshalClusterFromReader(r io.Reader) (*Cluster, error) {
 }
 
 // NewCluster create a cluster
-func NewCluster(name string, pattern string, lbName string) (*Cluster, error) {
+func NewCluster(name string, lbName string) (*Cluster, error) {
 	c := &Cluster{
-		Name:    name,
-		Pattern: pattern,
-		LbName:  lbName,
+		Name:   name,
+		LbName: lbName,
 	}
 
 	return c, c.init()
 }
 
-func (c *Cluster) init() error {
-	reg, err := regexp.Compile(c.Pattern)
+// AddBind add bind
+func (c *Cluster) AddBind(bind *Bind) {
+	index := c.indexOf(bind.ServerAddr)
+	if index == -1 {
+		c.BindServers = append(c.BindServers, bind.ServerAddr)
+	}
+}
 
-	if nil != err {
-		return err
+// HasBind add bind
+func (c *Cluster) HasBind() bool {
+	return len(c.BindServers) > 0
+}
+
+// RemoveBind remove bind
+func (c *Cluster) RemoveBind(serverAddr string) {
+	index := c.indexOf(serverAddr)
+	if index >= 0 {
+		c.BindServers = append(c.BindServers[:index], c.BindServers[index+1:]...)
+	}
+}
+
+func (c *Cluster) indexOf(serverAddr string) int {
+	for index, s := range c.BindServers {
+		if s == serverAddr {
+			return index
+		}
 	}
 
-	c.regexp = reg
+	return -1
+}
+
+func (c *Cluster) init() error {
 	c.svrs = list.New()
 	c.lb = lb.NewLoadBalance(c.LbName)
 	c.rwLock = &sync.RWMutex{}
@@ -86,10 +108,7 @@ func (c *Cluster) updateFrom(cluster *Cluster) {
 		defer c.rwLock.Unlock()
 	}
 
-	c.Pattern = cluster.Pattern
 	c.LbName = cluster.LbName
-
-	c.regexp, _ = regexp.Compile(c.Pattern)
 	c.lb = lb.NewLoadBalance(c.LbName)
 
 	log.Infof("Cluster <%s> updated, %+v", c.Name, c)
@@ -151,11 +170,6 @@ func (c *Cluster) Select(req *fasthttp.Request) string {
 	s, _ := e.Value.(string)
 
 	return s
-}
-
-// Matches return true if req matches
-func (c *Cluster) Matches(req *fasthttp.Request) bool {
-	return c.regexp.MatchString(string(req.URI().Path()))
 }
 
 // Marshal marshal

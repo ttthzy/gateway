@@ -1,25 +1,32 @@
-#Gateway
+<img src="images/logo.png" height=80></img>
 
-Gateway是一个API网关，工作在7层，对外提供HTTP服务，提供以下功能
+[![Gitter](https://badges.gitter.im/fagongzi/gateway.svg)](https://gitter.im/fagongzi/gateway?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
+[![Build Status](https://api.travis-ci.org/fagongzi/gateway.svg)](https://travis-ci.org/fagongzi/gateway)
+[![Go Report Card](https://goreportcard.com/badge/github.com/fagongzi/gateway)](https://goreportcard.com/report/github.com/fagongzi/gateway)
 
-* 流控
-* 熔断
-* 负载均衡
-* 基于URL的路由分发
-* 服务聚合
-* 管理后台
+Gateway
+-------
+Gateway is a http restful API gateway. 
 
-安装
-----
-Gateway依赖[etcd](https://github.com/coreos/etcd)
+# Features
+* Traffic Control
+* Circuit Breaker
+* Loadbalance
+* Service Discovery
+* Plugin mechanism
+* Routing based on URL
+* API aggregation
+* API Validation
+* API Access Control(blacklist and whitelist)
+* API Mock
+* Backend Server heath check
+* Use [fasthttp](https://github.com/valyala/fasthttp)
+* Admin WEBUI
 
-Gateway自身有2个组件
+# Install
+Gateway dependency [etcd](https://github.com/coreos/etcd)
 
-* gateway 网关
-* admin 管理后台
-
-###通过源码安装
-建议使用go1.6+
+## Compile from source
 ```
 git clone https://github.com/fagongzi.git
 cd $GOPATH/src/github.com/fagongzi/gateway
@@ -27,105 +34,98 @@ go build cmd/proxy/proxy.go
 go build cmd/admin/admin.go
 ```
 
-# 2.0 版本
-使用fasthttp代替golang http包，性能提升
+## Download binary file
+[linux-64bit](http://7xtbpp.com1.z0.glb.clouddn.com/gateway-linux64.tar.gz)
 
-# 概念
-gateway有以下几个概念：
+## Docker
+You can run `docker pull fagongzi/gateway` to get docker images, then use `docker run -d fagongzi/gateway` to run. It export 3 ports:
 
-* proxy
-gateway的前台proxy
+* 80
+
+  proxy http serve port
+
+* 8081
+
+  proxy manager port
+
+* 8080
+  
+  admin http port
+
+You can read [this](./docs/build.md) for more infomation about build and run gateway.
+
+# Online Demo
 
 * admin
-gateway的后台管理，一个admin可以管理同一个namespace（即etcdPrefix参数指定）下的所有proxy
 
-* cluster
-一个集群，集群中包含一组提供相同服务的server
+  http://demo-admin.fagongzi.win admin/admin
 
-* server
-一个backend server
+* proxy
+  
+  http://demo-proxy.fagongzi.win 
 
-* aggregation
-聚合，针对一个cluster和URL做聚合配置，一个聚合URL请求，会在proxy上扩散成多个子URL请求，然后做合并处理，返回数据。
+# Architecture
+![](./images/arch.png)
 
-* routing
-路由，可以根据queryString,cookie,request header等信息做请求路由。
+## Components
+Gateway has three component: proxy, admin, etcd.
 
-# 流控
-流控是限制多大的流量进入后端server而设计的，支持针对单个server的流量阈值设置
+### Proxy
+The proxy provide http server. Proxy is stateless, you can scale proxy node to deal with large traffic.
 
-# 熔断
-熔断就是为了解决后端系统被流量冲垮、以及后续的雪崩问题而设计的。熔断把后端server的状态设计为以下三种：
+### Admin 
+The admin is a backend manager system. Admin also is a stateless node, you can use a Nginx node for HA. One Admin node can manager a set of proxy which has a same etcd prefix configuration.
 
-* 打开
-这个状态下，流量正常进入后端server
-* 半打开
-这个状态下，部分流量进入后端server
-* 关闭
-这个状态下，0流量进入后端server
+### Etcd
+The Etcd store gateway's mete data.
 
-状态的转换规则为：
+## Concept of gateway
 
-* 打开 (后端出错)-> 关闭
-* 关闭 (经过一定时间) -> 半打开 
-* 半打开 （后端正常响应）-> 打开
-* 半打开 （后端正常错误）-> 关闭
+* Server
 
-负载均衡
----------
-目前支持的负载均衡：
+  Server is a backend server which provide restfule json service.The server is the basic unit at gateway. [more](./docs/server.md).
 
-* 轮询
-* IP Hash
+* Cluster
 
-# 基于URL的路由分发
-网关把加入到网关的后端server进行分组，形成多个cluster，在cluster上做负载均衡。
-多个cluster通过url的规则来进行消息路由
+  Cluster is a set of servers which provide the same service. The Loadbalancer select a usable server to use. [more](./docs/cluster.md).
 
-# 服务聚合
-为了说清楚这个功能，我们先看一个场景：
+* API
 
-在一家互联网公司，一个设计的故事：
+  API is the core concept in gateway.  You can define a API with a URL pattern, http method, and at least one dispatch node. [more](./docs/api.md).
 
-* app上有一个页面需要获取用户、订单、物流等多个信息
-* app开发人员希望后端人员提供一个单一的接口，同时返回这些数据
-* 后端开发人员不认可，目前系统中已经存在这个三个信息的查询接口，让APP开发人员调用三次接口，后端只提供原子服务。
-* 各自都有道理，最后出于用户体验和流量的考虑，后端开发妥协，提供了一个聚合接口
-* 系统成功上线后，需求变更，这个页面上需要展示更多的信息
-* 后端没有办法继续新增一个更大的聚合接口，原先的接口保留，为了更好的兼容
-* 这样的页面越来越多，后端的聚合接口也越来越多，非常难以维护
+* Routing
 
-这样的设计显然非常蛋疼，越到后期，越难以维护.
+  Routing is a approach to control http traffic to clusters. You can use cookie, query string, request header infomation in a expression for control.
 
-服务聚合就是为了解决这个问题而出现的，后端server只对外提供原子化的接口。对于聚合查询接口由API网关处理，处理流程如下：
+# What gateway can help you
+## API Definition
+You can define restful API based on backend real apis. You can also define a aggregation API use more backend apis.
 
-* 在admin管理平台上创建一个聚合接口，指定聚合接口的url以及需要聚合的url
-* 这个url请求到达网关，网关根据配置，同时请求对应的后端接口
-* 等待后端接口返回数据，合并数据返回给客户端
+## Validation
+You can create some validation rules for api, these rules can validate args of api is correct.
 
-# 管理后台
-提供webUI的方式管理网关的配置，例如后端server、集群、服务聚合、流控、熔断等所有功能
+## API Mock
+You can create a mock API. These API is not depend on backend server api. It can used for front-end developer or default return value that the back-end server does not respond to.
 
-提供网关上单个server的各项指标的查看页面
+## Protect backend server
+Gateway can use **Traffic Control** and **Circuit Breaker** functions to avoid backend crash by hight triffic.
 
-## dashboard
-![](./images/dashboard.png)
+## AB Test
+Gateway's **Routing** fucntion can help your AB Test.
 
-## proxy管理
-![](./images/proxy.png)
+# How to extend the gateway
+Gateway support plugin mechanism, currently it only support service discovery plugin. 
 
-## cluster管理
-![](./images/cluster.png)
+Once gateway proxy started, it scan `pluginDir` for plugins. In `PluginDir`, a json file is correspond a external plugin. The json file formart is:
+```json
+{
+    "type": "service-discovery",
+    "address": "127.0.0.1:8080"
+}
+```
 
-## server管理
-![](./images/server.png)
+Gateway proxy used http for communicate with plugin. Plugin must implementation this API for Registration:
 
-## 聚合管理
-![](./images/aggregations.png)
-
-## routing管理
-![](./images/routing.png)
-
-## 监控
-![](./images/metries.png)
-
+|URL|Method|
+|:---|:---|
+|/plugins\/$type|POST|

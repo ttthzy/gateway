@@ -1,21 +1,38 @@
-angular.module('status', []).filter("status", function(){
-    return function(input){
+angular.module('status', []).filter("status", function () {
+    return function (input) {
         return input == 1 ? "UP" : "DOWN";
     };
 });
-
 
 /**
  *  gateway
  *
  *  Description
  */
-angular.module('gateway', ["status"]).config(['$routeProvider',route]);
+var app = angular.module('gateway', ["status"]);
+app.directive('jsonText', function () {
+    return {
+        restrict: 'A',
+        require: 'ngModel',
+        link: function (scope, element, attr, ngModel) {
+            function into(input) {
+                return JSON.parse(input);
+            }
+            function out(data) {
+                return JSON.stringify(data);
+            }
+            ngModel.$parsers.push(into);
+            ngModel.$formatters.push(out);
+        }
+    };
+});
+
+app.config(['$routeProvider', route]);
 
 function route($routeProvider) {
     routeServer($routeProvider);
     routeRouting($routeProvider);
-    routeAggregation($routeProvider);
+    routeAPI($routeProvider);
     routeCluster($routeProvider);
     routeDashboard($routeProvider);
     routeProxy($routeProvider);

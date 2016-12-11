@@ -16,7 +16,8 @@ const (
 
 var (
 	serverAddr    = "127.0.0.1:12345"
-	angUrl        = "/api/test"
+	apiURL        = "/api/test"
+	apiMethod     = "GET"
 	checkDuration = 3
 	checkTimeout  = 2
 	clusterName   = "app"
@@ -101,8 +102,8 @@ func TestEtcdWatchNewServer(t *testing.T) {
 func TestServerCheckOk(t *testing.T) {
 	time.Sleep(time.Second * time.Duration(checkDuration))
 
-	if rt.svrs[serverAddr].Status == DOWN {
-		t.Errorf("status check ok err.expect:<UP>, acture:<%v>", DOWN)
+	if rt.svrs[serverAddr].Status == Down {
+		t.Errorf("status check ok err.expect:<UP>, acture:<%v>", Down)
 	}
 }
 
@@ -114,8 +115,8 @@ func TestServerCheckTimeout(t *testing.T) {
 	sleep = true
 	time.Sleep(time.Second * time.Duration(checkDuration*2+1)) // 等待两个周期
 
-	if rt.svrs[serverAddr].Status == UP {
-		t.Errorf("status check timeout err.expect:<DOWN>, acture:<%v>", UP)
+	if rt.svrs[serverAddr].Status == Up {
+		t.Errorf("status check timeout err.expect:<DOWN>, acture:<%v>", Up)
 		return
 	}
 }
@@ -123,17 +124,16 @@ func TestServerCheckTimeout(t *testing.T) {
 func TestServerCheckTimeoutRecovery(t *testing.T) {
 	time.Sleep(time.Second * time.Duration(checkDuration*2+1)) // 等待两个周期
 
-	if rt.svrs[serverAddr].Status == DOWN {
-		t.Errorf("status check timeout recovery err.expect:<UP>, acture:<%v>", UP)
+	if rt.svrs[serverAddr].Status == Down {
+		t.Errorf("status check timeout recovery err.expect:<UP>, acture:<%v>", Up)
 		return
 	}
 }
 
 func TestEtcdWatchNewCluster(t *testing.T) {
 	cluster := &Cluster{
-		Name:    clusterName,
-		Pattern: "/api/*",
-		LbName:  lbName,
+		Name:   clusterName,
+		LbName: lbName,
 	}
 
 	err := rt.store.SaveCluster(cluster)
@@ -174,30 +174,30 @@ func TestEtcdWatchNewBind(t *testing.T) {
 	t.Errorf("expect:<1>, acture:<%d>. %+v", len(rt.mapping), rt.mapping)
 }
 
-func TestEtcdWatchNewAggregation(t *testing.T) {
+func TestEtcdWatchNewAPI(t *testing.T) {
 	n := &Node{
 		AttrName:    "test",
-		URL:         "/api/node/test",
 		ClusterName: clusterName,
 	}
 
-	err := rt.store.SaveAggregation(&Aggregation{
-		URL:   angUrl,
-		Nodes: []*Node{n},
+	err := rt.store.SaveAPI(&API{
+		URL:    apiURL,
+		Method: apiMethod,
+		Nodes:  []*Node{n},
 	})
 
 	if nil != err {
-		t.Error("add aggregation err.")
+		t.Error("add api err.")
 		return
 	}
 
 	waitNotify()
 
-	if len(rt.aggregations) == 1 {
+	if len(rt.apis) == 1 {
 		return
 	}
 
-	t.Errorf("expect:<1>, acture:<%d>", len(rt.aggregations))
+	t.Errorf("expect:<1>, acture:<%d>", len(rt.apis))
 }
 
 func TestEtcdWatchUpdateServer(t *testing.T) {
@@ -252,9 +252,8 @@ func TestEtcdWatchUpdateServer(t *testing.T) {
 
 func TestEtcdWatchUpdateCluster(t *testing.T) {
 	cluster := &Cluster{
-		Name:    clusterName,
-		Pattern: "/api/new/*",
-		LbName:  lbName,
+		Name:   clusterName,
+		LbName: lbName,
 	}
 
 	err := rt.store.UpdateCluster(cluster)
@@ -268,48 +267,42 @@ func TestEtcdWatchUpdateCluster(t *testing.T) {
 
 	existCluster := rt.clusters[clusterName]
 
-	if existCluster.Pattern != cluster.Pattern {
-		t.Errorf("Pattern expect:<%s>, acture:<%s>. ", cluster.Pattern, existCluster.Pattern)
-		return
-	}
-
 	if existCluster.LbName != cluster.LbName {
 		t.Errorf("LbName expect:<%s>, acture:<%s>. ", cluster.LbName, existCluster.LbName)
 		return
 	}
 }
 
-func TestEtcdWatchUpdateAggregation(t *testing.T) {
+func TestEtcdWatchUpdateAPI(t *testing.T) {
 	n := &Node{
 		AttrName:    "test",
-		URL:         "/api/node/test",
 		ClusterName: clusterName,
 	}
 
 	n2 := &Node{
 		AttrName:    "tes2t",
-		URL:         "/api/node/test2",
 		ClusterName: clusterName,
 	}
 
-	ang := &Aggregation{
-		URL:   angUrl,
-		Nodes: []*Node{n, n2},
+	api := &API{
+		URL:    apiURL,
+		Method: apiMethod,
+		Nodes:  []*Node{n, n2},
 	}
 
-	err := rt.store.UpdateAggregation(ang)
+	err := rt.store.UpdateAPI(api)
 
 	if nil != err {
-		t.Error("update aggregation err.")
+		t.Error("update api err.")
 		return
 	}
 
 	waitNotify()
 
-	existAng, _ := rt.aggregations[ang.URL]
+	existAPI, _ := rt.apis[getAPIKey(api.URL, api.Method)]
 
-	if len(existAng.Nodes) != len(ang.Nodes) {
-		t.Errorf("Nodes expect:<%s>, acture:<%s>. ", len(existAng.Nodes), len(ang.Nodes))
+	if len(existAPI.Nodes) != len(api.Nodes) {
+		t.Errorf("Nodes expect:<%d>, acture:<%d>. ", len(existAPI.Nodes), len(api.Nodes))
 		return
 	}
 }
@@ -358,18 +351,18 @@ func TestEtcdWatchDeleteServer(t *testing.T) {
 	}
 }
 
-func TestEtcdWatchDeleteAggregation(t *testing.T) {
-	err := rt.store.DeleteAggregation(angUrl)
+func TestEtcdWatchDeleteAPI(t *testing.T) {
+	err := rt.store.DeleteAPI(apiURL, apiMethod)
 
 	if nil != err {
-		t.Error("delete aggregation err.")
+		t.Error("delete api err.")
 		return
 	}
 
 	waitNotify()
 
-	if len(rt.aggregations) != 0 {
-		t.Errorf("aggregations expect:<0>, acture:<%d>", len(rt.aggregations))
+	if len(rt.apis) != 0 {
+		t.Errorf("apis expect:<0>, acture:<%d>", len(rt.apis))
 		return
 	}
 }

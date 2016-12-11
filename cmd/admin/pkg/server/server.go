@@ -63,6 +63,7 @@ func (server *AdminServer) initHTTPServer() {
 	server.initAPIRoute()
 }
 
+// Start start the admin server
 func (server *AdminServer) Start() {
 	fmt.Printf("start at %s\n", server.addr)
 	server.e.Run(sd.New(server.addr))

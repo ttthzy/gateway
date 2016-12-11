@@ -12,10 +12,6 @@ import (
 	"github.com/CodisLabs/codis/pkg/utils/log"
 )
 
-const (
-	CHECK_SUCCESS = "OK"
-)
-
 // Status status
 type Status int
 
@@ -23,33 +19,47 @@ type Status int
 type Circuit int
 
 const (
-	DOWN = Status(0)
-	UP   = Status(1)
+	// Down backend server down status
+	Down = Status(0)
+	// Up backend server up status
+	Up = Status(1)
 )
 
 const (
-	CIRCUIT_OPEN  = Circuit(0)
-	CIRCUIT_HALF  = Circuit(1)
-	CIRCUIT_CLOSE = Circuit(2)
+	// CircuitOpen Circuit open status
+	CircuitOpen = Circuit(0)
+	// CircuitHalf Circuit half status
+	CircuitHalf = Circuit(1)
+	// CircuitClose Circuit close status
+	CircuitClose = Circuit(2)
 )
 
 const (
-	DEFAULT_CHECK_INTERVAL = 5
-	DEFAULT_CHECK_TIMEOUT  = 3
-
-	THRESHOLD_MAX_FAIED_COUNT = 10
+	// DefaultCheckDurationInSeconds Default duration to check server
+	DefaultCheckDurationInSeconds = 5
+	// DefaultCheckTimeoutInSeconds Default timeout to check server
+	DefaultCheckTimeoutInSeconds = 3
 )
 
 // Server server
 type Server struct {
 	Schema string `json:"schema,omitempty"`
-	Addr   string `json:"addr,omitempty"` // ip:port
+	Addr   string `json:"addr,omitempty"`
 
-	CheckPath     string `json:"checkPath,omitempty"`     // begin with / checkpath, expect return OK.
-	CheckDuration int    `json:"checkDuration,omitempty"` // check interval, unit second
-	CheckTimeout  int    `json:"checkTimeout,omitempty"`
-	Status        Status `json:"status,omitempty"` // Server status
+	// External external, e.g. create from external service discovery
+	External bool `json:"external,omitempty"`
+	// CheckPath begin with / checkpath, expect return CheckResponsedBody.
+	CheckPath string `json:"checkPath,omitempty"`
+	// CheckResponsedBody check url responsed http body, if not set, not check body
+	CheckResponsedBody string `json:"checkResponsedBody"`
+	// CheckDuration check interval, unit second
+	CheckDuration int `json:"checkDuration,omitempty"`
+	// CheckTimeout timeout to check server
+	CheckTimeout int `json:"checkTimeout,omitempty"`
+	// Status Server status
+	Status Status `json:"status,omitempty"`
 
+	// MaxQPS the backend server max qps support
 	MaxQPS          int `json:"maxQPS,omitempty"`
 	HalfToOpen      int `json:"halfToOpen,omitempty"`
 	HalfTrafficRate int `json:"halfTrafficRate,omitempty"`
@@ -74,7 +84,7 @@ func UnMarshalServer(data []byte) *Server {
 	json.Unmarshal(data, v)
 
 	if 0 == v.CheckTimeout {
-		v.CheckTimeout = DEFAULT_CHECK_TIMEOUT
+		v.CheckTimeout = DefaultCheckTimeoutInSeconds
 	}
 
 	return v
@@ -87,10 +97,10 @@ func UnMarshalServerFromReader(r io.Reader) (*Server, error) {
 	decoder := json.NewDecoder(r)
 	err := decoder.Decode(v)
 
-	v.Status = DOWN
+	v.Status = Down
 
 	if 0 == v.CheckTimeout {
-		v.CheckTimeout = DEFAULT_CHECK_TIMEOUT
+		v.CheckTimeout = DefaultCheckTimeoutInSeconds
 	}
 
 	return v, err
@@ -100,6 +110,37 @@ func UnMarshalServerFromReader(r io.Reader) (*Server, error) {
 func (s *Server) Marshal() []byte {
 	v, _ := json.Marshal(s)
 	return v
+}
+
+// HasBind add bind
+func (s *Server) HasBind() bool {
+	return len(s.BindClusters) > 0
+}
+
+// AddBind add bind
+func (s *Server) AddBind(bind *Bind) {
+	index := s.indexOf(bind.ClusterName)
+	if index == -1 {
+		s.BindClusters = append(s.BindClusters, bind.ClusterName)
+	}
+}
+
+// RemoveBind remove bind
+func (s *Server) RemoveBind(clusterName string) {
+	index := s.indexOf(clusterName)
+	if index >= 0 {
+		s.BindClusters = append(s.BindClusters[:index], s.BindClusters[index+1:]...)
+	}
+}
+
+func (s *Server) indexOf(clusterName string) int {
+	for index, s := range s.BindClusters {
+		if s == clusterName {
+			return index
+		}
+	}
+
+	return -1
 }
 
 func (s *Server) updateFrom(svr *Server) {
@@ -123,17 +164,17 @@ func (s *Server) GetCircuit() Circuit {
 
 // OpenCircuit set circuit open status
 func (s *Server) OpenCircuit() {
-	s.circuit = CIRCUIT_OPEN
+	s.circuit = CircuitOpen
 }
 
 // CloseCircuit set circuit close status
 func (s *Server) CloseCircuit() {
-	s.circuit = CIRCUIT_CLOSE
+	s.circuit = CircuitClose
 }
 
 // HalfCircuit set circuit half status
 func (s *Server) HalfCircuit() {
-	s.circuit = CIRCUIT_HALF
+	s.circuit = CircuitHalf
 }
 
 // Lock lock
@@ -151,7 +192,7 @@ func (s *Server) init() {
 		Timeout: time.Second * s.getCheckTimeout(),
 	}
 
-	s.circuit = CIRCUIT_OPEN
+	s.circuit = CircuitOpen
 	s.lock = &sync.Mutex{}
 	s.checkStopped = false
 }
@@ -162,7 +203,7 @@ func (s *Server) stopCheck() {
 
 func (s *Server) getCheckTimeout() time.Duration {
 	if s.CheckTimeout == 0 {
-		return time.Duration(DEFAULT_CHECK_TIMEOUT)
+		return time.Duration(DefaultCheckTimeoutInSeconds)
 	}
 
 	return time.Duration(s.CheckTimeout)
@@ -198,12 +239,16 @@ func (s *Server) check(cb func(*Server)) bool {
 		return succ
 	}
 
+	if s.CheckResponsedBody == "" {
+		return true
+	}
+
 	body, err := ioutil.ReadAll(resp.Body)
 	if nil != err {
 		return false
 	}
 
-	succ = string(body) == CHECK_SUCCESS
+	succ = string(body) == s.CheckResponsedBody
 	return succ
 }
 

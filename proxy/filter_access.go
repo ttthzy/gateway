@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/CodisLabs/codis/pkg/utils/log"
-	"github.com/fagongzi/gateway/conf"
+	"github.com/fagongzi/gateway/pkg/conf"
 )
 
 // AccessFilter record the http access log
@@ -32,7 +32,7 @@ func (f AccessFilter) Post(c *filterContext) (statusCode int, err error) {
 	cost := (c.endAt - c.startAt)
 
 	log.Infof("%s %s \"%s\" %d \"%s\" %s %s",
-		c.ctx.RemoteIP().String(),
+		GetRealClientIP(c.ctx),
 		c.ctx.Method(),
 		c.outreq.RequestURI(),
 		c.result.Res.StatusCode(),

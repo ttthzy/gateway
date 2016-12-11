@@ -9,24 +9,23 @@ import (
 	"time"
 
 	"github.com/CodisLabs/codis/pkg/utils/log"
-	"github.com/fagongzi/gateway/conf"
+	"github.com/fagongzi/gateway/pkg/conf"
 	"github.com/fagongzi/gateway/pkg/model"
+	"github.com/fagongzi/gateway/pkg/plugin"
+	"github.com/fagongzi/gateway/pkg/util"
 	"github.com/valyala/fasthttp"
 )
 
-const (
+var (
 	// ErrPrefixRequestCancel user cancel request error
 	ErrPrefixRequestCancel = "request canceled"
-)
-
-var (
 	// ErrNoServer no server
 	ErrNoServer = errors.New("has no server")
+	// ErrRewriteNotMatch rewrite not match request url
+	ErrRewriteNotMatch = errors.New("rewrite not match request url")
 )
 
 var (
-	// HeaderContentType content-type header
-	HeaderContentType = "Content-Type"
 	// MergeContentType merge operation using content-type
 	MergeContentType = "application/json; charset=utf-8"
 	// MergeRemoveHeaders merge operation need to remove headers
@@ -39,33 +38,73 @@ var (
 
 // Proxy Proxy
 type Proxy struct {
-	fastHTTPClient *FastHTTPClient
-	config         *conf.Conf
-	routeTable     *model.RouteTable
-	flushInterval  time.Duration
-	filters        *list.List
+	cnf                  *conf.Conf
+	filters              *list.List
+	fastHTTPClient       *util.FastHTTPClient
+	routeTable           *model.RouteTable
+	pluginRegistryCenter *plugin.RegistryCenter
 }
 
 // NewProxy create a new proxy
-func NewProxy(config *conf.Conf, routeTable *model.RouteTable) *Proxy {
+func NewProxy(config *conf.Conf) *Proxy {
 	p := &Proxy{
-		fastHTTPClient: NewFastHTTPClient(config),
-		config:         config,
-		routeTable:     routeTable,
+		fastHTTPClient: util.NewFastHTTPClient(config),
+		cnf:            config,
 		filters:        list.New(),
 	}
+
+	p.init()
 
 	return p
 }
 
-// RegistryFilter registry a filter
-func (p *Proxy) RegistryFilter(name string) {
-	f, err := newFilter(name, p.config, p)
+func (p *Proxy) init() {
+	err := p.initPlugins()
 	if nil != err {
-		log.Panicf("Proxy unknow filter <%s>.", name)
+		log.PanicErrorf(err, "Proxy load plugins failure at <%s>.", p.cnf.PluginDir)
 	}
 
-	p.filters.PushBack(f)
+	err = p.initRouteTable()
+	if err != nil {
+		log.PanicError(err, "init etcd store error")
+	}
+
+	p.initFilters()
+}
+
+func (p *Proxy) initRouteTable() error {
+	store, err := model.NewEtcdStore(p.cnf.EtcdAddrs, p.cnf.EtcdPrefix)
+
+	if err != nil {
+		return err
+	}
+
+	register, _ := store.(model.Register)
+
+	register.Registry(&model.ProxyInfo{
+		Conf: p.cnf,
+	})
+
+	p.routeTable = model.NewRouteTable(p.cnf, store, model.NewServiceDiscoveryDriver(p.pluginRegistryCenter))
+	p.routeTable.Load()
+
+	return nil
+}
+
+func (p *Proxy) initPlugins() error {
+	p.pluginRegistryCenter = plugin.NewRegistryCenter(p.cnf, p.fastHTTPClient)
+	return p.pluginRegistryCenter.Load()
+}
+
+func (p *Proxy) initFilters() {
+	for _, filter := range p.cnf.Filers {
+		f, err := newFilter(filter, p.cnf, p)
+		if nil != err {
+			log.Panicf("Proxy unknow filter <%s>.", filter)
+		}
+
+		p.filters.PushBack(f)
+	}
 }
 
 // Start start proxy
@@ -73,10 +112,10 @@ func (p *Proxy) Start() {
 	err := p.startRPCServer()
 
 	if nil != err {
-		log.PanicErrorf(err, "Proxy start rpc at <%s> fail.", p.config.MgrAddr)
+		log.PanicErrorf(err, "Proxy start rpc at <%s> fail.", p.cnf.MgrAddr)
 	}
 
-	log.ErrorErrorf(fasthttp.ListenAndServe(p.config.Addr, p.ReverseProxyHandler), "Proxy exit at %s", p.config.Addr)
+	log.ErrorErrorf(fasthttp.ListenAndServe(p.cnf.Addr, p.ReverseProxyHandler), "Proxy exit at %s", p.cnf.Addr)
 }
 
 // ReverseProxyHandler http reverse handler
@@ -84,7 +123,7 @@ func (p *Proxy) ReverseProxyHandler(ctx *fasthttp.RequestCtx) {
 	results := p.routeTable.Select(&ctx.Request)
 
 	if nil == results || len(results) == 0 {
-		ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
+		ctx.SetStatusCode(fasthttp.StatusNotFound)
 		return
 	}
 
@@ -110,6 +149,12 @@ func (p *Proxy) ReverseProxyHandler(ctx *fasthttp.RequestCtx) {
 
 	for _, result := range results {
 		if result.Err != nil {
+			if result.API.Mock != nil {
+				result.API.RenderMock(ctx)
+				result.Release()
+				return
+			}
+
 			ctx.SetStatusCode(result.Code)
 			result.Release()
 			return
@@ -129,7 +174,7 @@ func (p *Proxy) ReverseProxyHandler(ctx *fasthttp.RequestCtx) {
 		result.Res.Header.CopyTo(&ctx.Response.Header)
 	}
 
-	ctx.Response.Header.Add(HeaderContentType, MergeContentType)
+	ctx.Response.Header.SetContentType(MergeContentType)
 	ctx.SetStatusCode(fasthttp.StatusOK)
 
 	ctx.WriteString("{")
@@ -165,8 +210,19 @@ func (p *Proxy) doProxy(ctx *fasthttp.RequestCtx, wg *sync.WaitGroup, result *mo
 	outreq := copyRequest(&ctx.Request)
 
 	// change url
-	if result.Node != nil {
-		outreq.URI().SetPath(result.Node.URL)
+	if result.NeedRewrite() {
+		// if not use rewrite, it only change uri path and query string
+		realPath := result.GetRewritePath(&ctx.Request)
+		if "" != realPath {
+			log.Infof("URL Rewrite from <%s> to <%s>", string(ctx.URI().FullURI()), realPath)
+			outreq.SetRequestURI(realPath)
+			outreq.SetHost(svr.Addr)
+		} else {
+			log.Warnf("URL Rewrite<%s> not matches <%s>", string(ctx.URI().FullURI()), result.Node.Rewrite)
+			result.Err = ErrRewriteNotMatch
+			result.Code = http.StatusBadRequest
+			return
+		}
 	}
 
 	c := &filterContext{
